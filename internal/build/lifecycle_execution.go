@@ -10,7 +10,6 @@ import (
 	"strconv"
 
 	"github.com/BurntSushi/toml"
-
 	"github.com/buildpacks/lifecycle/api"
 	"github.com/buildpacks/lifecycle/auth"
 	"github.com/buildpacks/lifecycle/platform/files"
@@ -480,16 +479,11 @@ func (l *LifecycleExecution) Restore(ctx context.Context, buildCache Cache, kani
 
 	// for kaniko
 	kanikoCacheBindOp := NullOp()
-	if (l.platformAPI.AtLeast("0.10") && l.hasExtensionsForBuild()) ||
-		l.platformAPI.AtLeast("0.12") {
-		if l.hasExtensionsForBuild() {
-			flags = append(flags, "-build-image", l.opts.BuilderImage)
-			registryImages = append(registryImages, l.opts.BuilderImage)
-		}
+	if l.platformAPI.AtLeast("0.12") {
 		if l.runImageChanged() || l.hasExtensionsForRun() {
 			registryImages = append(registryImages, l.runImageAfterExtensions())
 		}
-		if l.hasExtensionsForBuild() || l.hasExtensionsForRun() {
+		if l.hasExtensionsForRun() {
 			kanikoCacheBindOp = WithBinds(fmt.Sprintf("%s:%s", kanikoCache.Name(), l.mountPaths.kanikoCacheDir()))
 		}
 	}
@@ -712,16 +706,12 @@ const (
 	argGroupID = "group_id"
 )
 
-/*
-	This implementation of ExtendBuildByDaemon is based on the RFC #0105 which uses docker daemon to extend the build Image instead of kaniko.
-	* Parsing the `group.toml` from the temp directory of buildpack and set the extensions.
-	* Reading the dockerfiles that were generated during the `generate` phase and also parsing the Arguments given by the user from
-	`extend-config.toml`.
-	* Using ImageBuild method of docker API client to extend the Image and save it to the daemon.
-	* Invoking Build phase of lifecycle by creating a container from the extended Image and dropping the privileges.
-
-*/
-
+// ExtendBuildByDaemon uses a daemon to extend the build image, instead of kaniko via the lifecycle `extender`. It does this by:
+//   - Parsing the detected `group.toml` from a temp directory to find the detected extensions.
+//   - Reading the Dockerfiles that were generated during the `generate` phase and also parsing the arguments
+//     given by the extension in `extend-config.toml`.
+//   - Using the `ImageBuild` method of the docker API client to extend the image and save it to the daemon.
+//   - Invoking the `build` phase of lifecycle by creating a container from the extended image.
 func (l *LifecycleExecution) ExtendBuildByDaemon(ctx context.Context) error {
 	builderImageName := l.opts.BuilderImage
 	extendedBuilderImageName := l.opts.BuilderImage + "-extended"
@@ -769,10 +759,7 @@ func (l *LifecycleExecution) ExtendBuildByDaemon(ctx context.Context) error {
 	return nil
 }
 
-/*
-	Deprecated: Check RFC #0105 for the new implementation of ExtendBuild using docker daemon #1623.
-*/
-
+// Deprecated: ExtendBuild uses kaniko to extend the build image, via the lifecycle `extender`.
 func (l *LifecycleExecution) ExtendBuild(ctx context.Context, kanikoCache Cache, phaseFactory PhaseFactory) error {
 	flags := []string{"-app", l.mountPaths.appDir()}
 
@@ -794,10 +781,10 @@ func (l *LifecycleExecution) ExtendBuild(ctx context.Context, kanikoCache Cache,
 	return extend.Run(ctx)
 }
 
-/*
-	Note: - Run Image Extension by docker daemon was much worse than kaniko because of saving layers on disk.
-*/
-
+// ExtendRun extends the run image by invoking the `extender` in the context of the run image
+// to apply the provided Dockerfiles using kaniko - unlike extending the build image, which uses `docker build`.
+// Extending the run image with `docker build` degrades performance
+// due to the extra time spent exporting the extended layers from the daemon.
 func (l *LifecycleExecution) ExtendRun(ctx context.Context, kanikoCache Cache, phaseFactory PhaseFactory) error {
 	flags := []string{"-app", l.mountPaths.appDir(), "-kind", "run"}
 
